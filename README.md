@@ -64,7 +64,7 @@ export PATH=$PATH:$HOME/bin
 ### Get the code
 
 ```bash
-git clone https://github.com/patrickangeles/redpanda-si-demo.git
+git clone https://github.com/ajurcenk/redpanda-si-demo
 cd redpanda-si-demo
 ```
 
