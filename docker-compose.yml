@@ -16,7 +16,7 @@ services:
       - ./volumes/minio/data:/data
 
   redpanda:
-    image: docker.redpanda.com/vectorized/redpanda:v22.2.2
+    image: docker.redpanda.com/vectorized/redpanda:${RP_VERSION}
     command:
       - redpanda start
       - --smp 1
@@ -58,7 +58,7 @@ services:
       - redpanda
 
   redpanda-rrr:
-    image: docker.redpanda.com/vectorized/redpanda:v22.2.2
+    image: docker.redpanda.com/vectorized/redpanda:${RP_VERSION}
     command:
       - redpanda start
       - --smp 1

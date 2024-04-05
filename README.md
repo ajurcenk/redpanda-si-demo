@@ -69,9 +69,28 @@ cd redpanda-si-demo
 ```
 
 On Linux, change ownership of the `data` directory (Docker on Mac handles this automatically):
+
 ```bash
 mkdir -p volumes/redpanda/data
 sudo chown -R 101:101 volumes
+```
+
+```bash
+mkdir -p volumes/redpanda-rrr/data
+sudo chown -R 101:101 volumes
+```
+
+Install `minio` client on Linux host
+
+```bash
+curl https://dl.min.io/client/mc/release/linux-amd64/mc \
+  --create-dirs \
+  -o $HOME/minio-binaries/mc
+
+chmod +x $HOME/minio-binaries/mc
+export PATH=$PATH:$HOME/minio-binaries/
+
+mc --help
 ```
 
 ## Overview of `docker-compose.yml`
@@ -105,7 +124,7 @@ services:
       - ./volumes/minio/data:/data
 
   redpanda:
-    image: docker.redpanda.com/vectorized/redpanda:v22.2.2
+    image: docker.redpanda.com/vectorized/redpanda:${RP_VERSION}
     command:
       - redpanda start
       - --smp 1
@@ -130,20 +149,17 @@ services:
 ...
 ```
 
-## Start up the Docker Compose
+## Start up the Docker Compose minio
 
 ```bash
-docker compose up -d
+docker compose up minio -d
 ```
 
 Once it comes up, you can see the consoles for the two Redpanda clusters and MinIO:
-* [Redpanda](http://localhost:8080)
-* [Redpanda RRR](http://localhost:8180)
+
 * [MinIO](http://localhost:9001)
 
-You should also be able to connect to each cluster via the Kafka API on `localhost:9092` and `localhost:9192`.
-
-## Set up Minio 
+## Set up Minio
 
 We need to create a bucket called `redpanda` for use by Redpanda as the archive location. To do this,
 we use `mc`, but first we need to set up `mc` with an alias so that it can access
@@ -154,17 +170,34 @@ mc alias set local http://localhost:9000 minio minio123
 mc mb local/redpanda
 ```
 
-## Create a topic 
+## Start up the Docker Compose
+
+```bash
+docker compose up redpanda -d
+```
+
+```bash
+docker compose up redpanda-rrr -d
+```
+
+Once it comes up, you can see the consoles for the two Redpanda clusters and MinIO:
+* [Redpanda](http://localhost:8080)
+* [Redpanda RRR](http://localhost:8180)
+
+You should also be able to connect to each cluster via the Kafka API on `localhost:9092` and `localhost:9192`.
+
+## Create a topic
 
 You can see what the current directory structure looks like with the `tree` command.
 
 ```bash
 tree volumes
 ```
+
 Create the topic. For now, we want tiered storage disabled for this topic.
 
 ```bash
-rpk topic create thelog \
+rpk -X brokers=localhost:9092 topic create thelog \
         -c retention.bytes=100000 \
         -c segment.bytes=10000 \
         -c redpanda.remote.read=false \
@@ -174,8 +207,11 @@ rpk topic create thelog \
 Look again to see that the directory structure has changed with `tree volumes`.
 You should see something like this.
 
+```bash
+tree volumes
 ```
-$ tree volumes
+
+```
 volumes
 ├── minio
 │   └── data
@@ -207,7 +243,7 @@ volumes
 The following script writes 1000 records at a time to the topic.
 
 ```bash
-BATCH=$(date) ; printf "$BATCH %s\n" {1..1000} | rpk topic produce thelog
+BATCH=$(date) ; printf "$BATCH %s\n" {1..1000} | rpk -X brokers=localhost:9092 topic produce thelog
 ```
 
 Repeat this a few times, while checking the directory structure with `tree volumes`.
@@ -226,14 +262,15 @@ volumes/redpanda/data/kafka
         ├── 4001-1-v1.log
         └── archival_metadata.snapshot
 ```
+
 Consume some data, from the earliest available offset.
 
 ```bash
-rpk topic consume thelog -o start -n 3
+rpk -X brokers=localhost:9092 topic consume thelog -o start -n 3
 ```
 Output should look something like this.
 
-```
+```json
 {
   "topic": "thelog",
   "value": "Thu Apr 28 10:29:19 EDT 2022 1",
@@ -260,8 +297,11 @@ Output should look something like this.
 Keep producing more data, until the offset exceeds ~12000 or so.
 Have a look at the directory structure. You'll notice that the first log segment `0-1-v1.log` is now gone.
 
+```bash
+tree volumes/redpanda/data/kafka
 ```
-$ tree volumes/redpanda/data/kafka
+
+```
 volumes/redpanda/data/kafka
 └── thelog
     └── 0_3
@@ -280,11 +320,15 @@ volumes/redpanda/data/kafka
         ├── archival_metadata.snapshot
         └── snapshot
 ```
+
 When you consume from the topic, you will no longer see data from the first segment.
 Here, our consumer sees offset 2000 as the earliest available.
 
+```bash
+rpk -X brokers=localhost:9092 topic consume thelog -o start -n 3
 ```
-$ rpk topic consume thelog -o start -n 3
+
+```json
 {
   "topic": "thelog",
   "value": "Thu Apr 28 10:29:21 EDT 2022 1",
@@ -310,17 +354,20 @@ $ rpk topic consume thelog -o start -n 3
 
 ## Enable Shadow Indexing
 
-Now let's turn on Shadow Indexing
+Now let's turn on Tired storage (Shadow Indexing)
 
 ```bash
-rpk topic alter-config thelog -s redpanda.remote.read=true
-rpk topic alter-config thelog -s redpanda.remote.write=true
+rpk -X brokers=localhost:9092 topic alter-config thelog -s redpanda.remote.read=true
+rpk -X brokers=localhost:9092 topic alter-config thelog -s redpanda.remote.write=true
 ```
 
 After a few seconds, then you'll notice that log segments have been uploaded and now show up on MinIO.
 
+```bash
+tree volumes/minio/data
 ```
-$ tree volumes/minio/data
+
+```json
 volumes/minio/data
 └── redpanda
     ├── 1ebedfeb
@@ -344,14 +391,17 @@ volumes/minio/data
 Now, let's produce more data such that the oldest log segments (starting with offset 2000) start to disappear.
 
 ```bash
-BATCH=$(date) ; printf "$BATCH %s\n" {1..1000} | rpk topic produce thelog
+BATCH=$(date) ; printf "$BATCH %s\n" {1..1000} | rpk -X brokers=localhost:9092 topic produce thelog
 ```
 
 Repeat that a few times until some segments get cleaned up (deleted) from the Redpanda data dir.
 Here, the segments `2001-1-v1.log` and `4001-1-v1.log` have been deleted.
 
+```bash
+tree volumes/redpanda/data/kafka
 ```
-$ tree volumes/redpanda/data/kafka
+
+```json
 volumes/redpanda/data/kafka
 └── thelog
     └── 0_2
@@ -373,8 +423,11 @@ volumes/redpanda/data/kafka
 
 However, those segments are still in S3, so we can still consume from those offsets.
 
+```bash
+rpk -X brokers=localhost:9092 topic consume thelog -n 3
 ```
-$ rpk topic consume thelog -n 3
+
+```json
 {
   "topic": "thelog",
   "value": "Thu Apr 28 10:29:21 EDT 2022 1",
@@ -405,7 +458,7 @@ create topic command, but passing in a `redpanda.remote.readreplica` parameter w
 the value of the S3 bucket name. Note that the topic name (`thelog`) needs to match
 an existing archive topic in the bucket with that same name.
 
-```
+```bash
 rpk topic create thelog \
         -c redpanda.remote.readreplica=redpanda \
         --brokers localhost:9192
@@ -413,7 +466,7 @@ rpk topic create thelog \
 
 Now, try to consume from the read replica topic:
 
-```
+```bash
 rpk topic consume thelog -n 3 --brokers localhost:9192
 ```
 
